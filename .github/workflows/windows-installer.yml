@@ -30,7 +30,7 @@ jobs:
         shell: bash
 
       - name: Build installer
-        run: npm run tauri build -- --bundles msi,nsis
+        run: npm run tauri build -- --bundles msi,nsis --no-sign
 
       - name: Upload Windows installers
         uses: actions/upload-artifact@v4
