@@ -1366,7 +1366,7 @@ pub fn get_activity_details(conn: &Connection, date: &str) -> SqlResult<Vec<Acti
          WHERE wt.date = ?1
          ORDER BY wt.watch_seconds DESC, c.title, l.title",
     )?;
-    stmt.query_map(params![date], |row| {
+    let details = stmt.query_map(params![date], |row| {
         Ok(ActivityDetail {
             course_id: row.get(0)?,
             course_title: row.get(1)?,
@@ -1375,7 +1375,8 @@ pub fn get_activity_details(conn: &Connection, date: &str) -> SqlResult<Vec<Acti
             watch_seconds: row.get(4)?,
         })
     })?
-    .collect()
+    .collect::<SqlResult<Vec<_>>>()?;
+    Ok(details)
 }
 
 // --- Custom Categories ---
