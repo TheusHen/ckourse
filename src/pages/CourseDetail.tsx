@@ -38,6 +38,7 @@ import {
   getCourseNotes,
   getLessonSubtitles,
   setLastWatched,
+  recordWatchTime,
   toggleLessonCompleted,
   saveLessonPosition,
   updateLessonDuration,
@@ -295,6 +296,17 @@ function CourseDetailInner({
     setVideoTime(time);
     videoTimeRef.current = time;
   }, []);
+
+  const playbackLessonId = activeLesson?.id;
+  const handleWatchTime = useCallback((seconds: number) => {
+    if (playbackLessonId == null) return;
+    recordWatchTime(playbackLessonId, seconds).catch((err) =>
+      reportError(err, "CourseDetail.recordWatchTime", {
+        lessonId: playbackLessonId,
+        seconds,
+      }),
+    );
+  }, [playbackLessonId]);
 
   // Save position when leaving the page
   useEffect(() => {
@@ -728,6 +740,7 @@ function CourseDetailInner({
             defaultVolume={settings.default_volume}
             skipSeconds={settings.skip_forward_secs}
             onTimeUpdate={handleTimeUpdate}
+            onWatchTime={handleWatchTime}
             onDurationChange={handleDurationChange}
             onPlayStateChange={handlePlayStateChange}
             onEnded={handleVideoEnded}

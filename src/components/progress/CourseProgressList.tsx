@@ -26,7 +26,7 @@ function detail(c: CourseProgress): string {
   return left > 0 ? `${lessons} · ${formatDuration(left)} left` : lessons;
 }
 
-export function CourseProgressList({ courses, className }: { courses: CourseProgress[]; className?: string }) {
+export function CourseProgressList({ courses, weeklyMinutes = 0, className }: { courses: CourseProgress[]; weeklyMinutes?: number; className?: string }) {
   const sorted = [...courses].sort((a, b) => rank(a) - rank(b) || pct(b) - pct(a));
 
   return (
@@ -34,6 +34,8 @@ export function CourseProgressList({ courses, className }: { courses: CourseProg
       {sorted.map((c, i) => {
         const p = pct(c);
         const done = p >= 100;
+        const remainingMins = Math.max(0, c.totalDurationMins - c.completedDurationMins);
+        const weeks = weeklyMinutes > 0 && remainingMins > 0 ? Math.ceil(remainingMins / weeklyMinutes) : null;
         return (
           <li key={c.id} style={{ animation: `card-in 300ms ${EASE_OUT} ${Math.min(i, 10) * 30}ms both` }}>
             <Link
@@ -52,7 +54,7 @@ export function CourseProgressList({ courses, className }: { courses: CourseProg
                     <span className="truncate font-sans text-sm font-medium text-foreground" title={c.title}>
                       {c.title}
                     </span>
-                    <span className="truncate font-sans text-xs tabular-nums text-muted-foreground">{detail(c)}</span>
+                    <span className="truncate font-sans text-xs tabular-nums text-muted-foreground">{detail(c)}{weeks !== null && !done && <span> · ~{weeks} {weeks === 1 ? "week" : "weeks"} at recent pace (estimate)</span>}</span>
                   </span>
                   <span className="flex shrink-0 items-center gap-1 font-sans text-sm font-medium tabular-nums text-foreground">
                     {done ? (

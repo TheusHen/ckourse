@@ -16,6 +16,7 @@ interface NoteCardProps {
   highlight?: string;
   onStartEdit: () => void;
   onDelete: () => void;
+  onSetTags: (tags: string[]) => void;
   className?: string;
 }
 
@@ -38,9 +39,10 @@ export function useTimestampJump(courseId: number, lessonId: number) {
   };
 }
 
-export function NoteCard({ note, showCourse, time, highlight = "", onStartEdit, onDelete, className }: NoteCardProps) {
+export function NoteCard({ note, showCourse, time, highlight = "", onStartEdit, onDelete, onSetTags, className }: NoteCardProps) {
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [hovered, setHovered] = useState(false);
+  const [newTag, setNewTag] = useState("");
   const html = useMemo(() => renderNoteHtml(note.content, highlight), [note.content, highlight]);
   const moment = useMemo(() => firstTimestamp(note.content), [note.content]);
   const timestampHandlers = useTimestampJump(note.courseId, note.lessonId);
@@ -85,6 +87,11 @@ export function NoteCard({ note, showCourse, time, highlight = "", onStartEdit, 
           dangerouslySetInnerHTML={{ __html: html }}
           {...timestampHandlers}
         />
+
+        <div className="mt-3 flex flex-wrap items-center gap-1.5" aria-label="Note tags">
+          {note.tags.map((tag) => <button key={tag} type="button" title={`Remove tag ${tag}`} onClick={() => onSetTags(note.tags.filter((t) => t !== tag))} className="rounded-full bg-secondary px-2 py-0.5 text-[11px] text-muted-foreground hover:text-foreground">{tag} ×</button>)}
+          <input value={newTag} onChange={(e) => setNewTag(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && newTag.trim()) { e.preventDefault(); const tag = newTag.trim().replace(/^#/, ""); if (!note.tags.includes(tag)) onSetTags([...note.tags, tag]); setNewTag(""); } }} placeholder="+ tag" aria-label="Add a note tag" className="w-16 bg-transparent text-[11px] text-muted-foreground outline-none placeholder:text-muted-foreground/70 focus:w-24" />
+        </div>
 
         <footer className="mt-3 flex min-h-8 items-center gap-1 font-sans text-xs text-muted-foreground">
           {confirmingDelete ? (

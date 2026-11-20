@@ -28,6 +28,7 @@ export type {
   DashboardStats,
   CourseProgress,
   ActivityDay,
+  ActivityDetail,
   CategoryBreakdown,
   ProgressData,
   LibraryStats,

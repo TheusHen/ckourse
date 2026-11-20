@@ -9,6 +9,7 @@ import type {
   SaveCourseConfig,
   ParsedCourse,
   DashboardStats,
+  ActivityDetail,
   ProgressData,
   LibraryStats,
   SearchResult,
@@ -127,6 +128,10 @@ export async function deleteNote(noteId: number): Promise<void> {
   return invoke("delete_note", { noteId });
 }
 
+export async function setNoteTags(noteId: number, tags: string[]): Promise<void> {
+  return invoke("set_note_tags", { noteId, tags });
+}
+
 export async function toggleBookmark(courseId: number): Promise<boolean> {
   return invoke<boolean>("toggle_bookmark", { courseId });
 }
@@ -149,6 +154,14 @@ export async function getDashboardStats(): Promise<DashboardStats> {
 
 export async function getProgressData(): Promise<ProgressData> {
   return invoke<ProgressData>("get_progress_data");
+}
+
+export async function recordWatchTime(lessonId: number, seconds: number): Promise<void> {
+  return invoke("record_watch_time", { lessonId, seconds });
+}
+
+export async function getActivityDetails(date: string): Promise<ActivityDetail[]> {
+  return invoke<ActivityDetail[]>("get_activity_details", { date });
 }
 
 export async function getLessonSubtitles(

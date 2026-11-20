@@ -11,8 +11,10 @@ import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { ProgressBar } from "@/components/ui/ProgressBar";
-import type { ProgressData } from "@/types";
-import { getProgressData } from "@/lib/store";
+import type { ActivityDetail, ProgressData } from "@/types";
+import { getActivityDetails, getProgressData } from "@/lib/store";
+import { SegmentedControl } from "@/components/ui/segmented-control";
+import { Link } from "react-router-dom";
 import { LevelSummary } from "@/components/progress/LevelSummary";
 import { ActivityHeatmap } from "@/components/progress/ActivityHeatmap";
 import { TopicBars } from "@/components/progress/TopicBars";
@@ -100,6 +102,10 @@ export function Progress({ className }: ProgressProps) {
   const [data, setData] = useState<ProgressData | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
+  const [period, setPeriod] = useState<"7" | "30" | "365" | "all">("30");
+  const [selectedDate, setSelectedDate] = useState<string | null>(null);
+  const [dayDetails, setDayDetails] = useState<ActivityDetail[]>([]);
+  const [detailsLoading, setDetailsLoading] = useState(false);
 
   const reload = useCallback(() => {
     getProgressData()
@@ -118,6 +124,37 @@ export function Progress({ className }: ProgressProps) {
   usePageVisible("/progress", reload);
 
   const activityDates = useMemo(() => new Set(data?.activityDays.map((d) => d.date) ?? []), [data]);
+
+  const periodStats = useMemo(() => {
+    if (!data) return null;
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const days = period === "all" ? null : Number(period);
+    const start = days == null ? null : new Date(today.getTime() - (days - 1) * 86_400_000);
+    const previousStart = days == null ? null : new Date(today.getTime() - days * 2 * 86_400_000 + 86_400_000);
+    const current = data.activityDays.filter((d) => {
+      if (!start) return true;
+      return new Date(`${d.date}T00:00:00`).getTime() >= start.getTime() && new Date(`${d.date}T00:00:00`).getTime() <= today.getTime();
+    });
+    const previous = days == null ? [] : data.activityDays.filter((d) => {
+      const date = new Date(`${d.date}T00:00:00`).getTime();
+      return previousStart != null && date >= previousStart.getTime() && date < start!.getTime();
+    });
+    const seconds = (rows: typeof data.activityDays) => rows.reduce((sum, day) => sum + day.watchSeconds, 0);
+    const currentSeconds = seconds(current);
+    const previousSeconds = seconds(previous);
+    const activeDays = current.filter((d) => d.watchSeconds > 0).length;
+    const previousActiveDays = previous.filter((d) => d.watchSeconds > 0).length;
+    const percent = (a: number, b: number) => b === 0 ? (a > 0 ? null : 0) : Math.round(((a - b) / b) * 100);
+    const spanDays = days ?? (current.length ? Math.max(1, Math.ceil((today.getTime() - new Date(`${current[0].date}T00:00:00`).getTime()) / 86_400_000) + 1) : 7);
+    return { currentSeconds, previousSeconds, activeDays, previousActiveDays, watchChange: percent(currentSeconds, previousSeconds), dayChange: percent(activeDays, previousActiveDays), recentWeeklyMinutes: currentSeconds / 60 / Math.max(1, spanDays / 7), averageMinutesPerActiveDay: activeDays ? currentSeconds / 60 / activeDays : 0 };
+  }, [data, period]);
+
+  const selectDate = useCallback((date: string) => {
+    setSelectedDate(date);
+    setDetailsLoading(true);
+    getActivityDetails(date).then(setDayDetails).catch(() => setDayDetails([])).finally(() => setDetailsLoading(false));
+  }, []);
 
   const container = "mx-auto w-full max-w-[1400px] px-6 pt-12 pb-20 lg:px-10";
 
@@ -199,10 +236,23 @@ export function Progress({ className }: ProgressProps) {
       </section>
 
       <section aria-labelledby="activity-title">
-        <h2 id="activity-title" className="mb-5 font-heading text-xl font-semibold text-foreground">
-          Activity
-        </h2>
-        <ActivityHeatmap activityDates={activityDates} />
+        <div className="mb-5 flex flex-wrap items-center justify-between gap-4">
+          <h2 id="activity-title" className="font-heading text-xl font-semibold text-foreground">Activity</h2>
+          <SegmentedControl aria-label="Progress period" value={period} onChange={setPeriod} options={[
+            { value: "7", label: "7 days" }, { value: "30", label: "30 days" }, { value: "365", label: "12 months" }, { value: "all", label: "All time" },
+          ]} />
+        </div>
+        {periodStats && <div className="mb-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          <div className="rounded-2xl border border-border bg-card p-4"><p className="text-xs text-muted-foreground">Time watched</p><p className="mt-1 text-xl font-semibold tabular-nums">{Math.round(periodStats.currentSeconds / 60)} min</p><p className="text-xs text-muted-foreground">{periodStats.watchChange == null ? "No previous period data" : `${periodStats.watchChange >= 0 ? "+" : ""}${periodStats.watchChange}% vs previous period`}</p></div>
+          <div className="rounded-2xl border border-border bg-card p-4"><p className="text-xs text-muted-foreground">Active days</p><p className="mt-1 text-xl font-semibold tabular-nums">{periodStats.activeDays}</p><p className="text-xs text-muted-foreground">{periodStats.dayChange == null ? "No previous period data" : `${periodStats.dayChange >= 0 ? "+" : ""}${periodStats.dayChange}% vs previous period`}</p></div>
+          <div className="rounded-2xl border border-border bg-card p-4"><p className="text-xs text-muted-foreground">Average per active day</p><p className="mt-1 text-xl font-semibold tabular-nums">{Math.round(periodStats.averageMinutesPerActiveDay)} min</p><p className="text-xs text-muted-foreground">Playback days only</p></div>
+          <div className="rounded-2xl border border-border bg-card p-4"><p className="text-xs text-muted-foreground">Recent pace</p><p className="mt-1 text-xl font-semibold tabular-nums">{Math.round(periodStats.recentWeeklyMinutes)} min/week</p><p className="text-xs text-muted-foreground">Based on tracked playback time</p></div>
+        </div>}
+        <ActivityHeatmap activityDates={activityDates} selectedDate={selectedDate} onSelectDate={selectDate} />
+        {selectedDate && <div className="mt-4 rounded-2xl border border-border bg-card p-5" aria-live="polite">
+          <div className="flex items-center justify-between gap-3"><h3 className="font-semibold">{new Date(`${selectedDate}T00:00:00`).toLocaleDateString(undefined, { dateStyle: "full" })}</h3><Button size="sm" variant="ghost" onClick={() => setSelectedDate(null)}>Close</Button></div>
+          {detailsLoading ? <p className="mt-3 text-sm text-muted-foreground">Loading activity…</p> : dayDetails.length ? <ul className="mt-3 divide-y divide-border">{dayDetails.map((item) => <li key={item.lessonId} className="flex items-center justify-between gap-4 py-2 text-sm"><Link className="min-w-0 truncate hover:underline" to={`/course/${item.courseId}`}>{item.courseTitle} · {item.lessonTitle}</Link><span className="shrink-0 tabular-nums text-muted-foreground">{Math.round(item.watchSeconds / 60)} min</span></li>)}</ul> : <p className="mt-3 text-sm text-muted-foreground">No playback details were recorded for this day. Manually completed lessons may still count as an activity day.</p>}
+        </div>}
       </section>
 
       {data.courses.length > 0 && (
@@ -213,7 +263,7 @@ export function Progress({ className }: ProgressProps) {
               title="Courses"
               detail={`${stats.inProgressCourses} in progress · ${stats.completedCourses} completed`}
             />
-            <CourseProgressList courses={data.courses} />
+            <CourseProgressList courses={data.courses} weeklyMinutes={periodStats?.recentWeeklyMinutes ?? 0} />
           </section>
 
           {data.categories.length > 0 && (

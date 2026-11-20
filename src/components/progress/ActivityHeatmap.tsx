@@ -52,7 +52,7 @@ function Fact({ value, label }: { value: ReactNode; label: string }) {
  * days in lime (your effort), the rest a quiet track. Weeks run left→right, days
  * top→bottom, with month labels at the first week of each month.
  */
-export function ActivityHeatmap({ activityDates, className }: { activityDates: Set<string>; className?: string }) {
+export function ActivityHeatmap({ activityDates, selectedDate, onSelectDate, className }: { activityDates: Set<string>; selectedDate?: string | null; onSelectDate?: (date: string) => void; className?: string }) {
   const [gridRef, weekCount] = useWeeksThatFit();
 
   const { weeks, months, monthCount, lastActive, today } = useMemo(() => {
@@ -115,7 +115,7 @@ export function ActivityHeatmap({ activityDates, className }: { activityDates: S
 
       <div ref={gridRef} className="overflow-hidden">
         <div
-          role="img"
+          role="group"
           aria-label={`${total} ${total === 1 ? "day" : "days"} learned; ${monthCount} this month`}
           className="grid w-fit gap-(--gap)"
           style={
@@ -149,10 +149,15 @@ export function ActivityHeatmap({ activityDates, className }: { activityDates: S
 
           {weeks.map((week, wi) =>
             week.map((day, di) => (
-              <span
+              <button
                 key={day.key}
                 title={day.future ? undefined : `${day.label}${day.active ? " · learned" : ""}`}
-                className={cn("rounded-[3px]", day.future ? "bg-transparent" : day.active ? "bg-primary" : "bg-accent")}
+                type="button"
+                disabled={day.future || !onSelectDate}
+                aria-label={`${day.label}${day.active ? ", activity recorded" : ", no activity"}${selectedDate === day.key ? ", selected" : ""}`}
+                aria-pressed={selectedDate === day.key}
+                onClick={() => onSelectDate?.(day.key)}
+                className={cn("rounded-[3px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring", day.future ? "bg-transparent" : day.active ? "bg-primary" : "bg-accent", selectedDate === day.key && "ring-2 ring-foreground ring-offset-2 ring-offset-card", !day.future && onSelectDate && "cursor-pointer hover:ring-2 hover:ring-foreground/60")}
                 style={{ gridRow: di + 2, gridColumn: wi + 2 }}
               />
             )),

@@ -42,3 +42,9 @@ pub fn delete_note(state: tauri::State<'_, DbState>, note_id: i64) -> Result<(),
     let conn = state.conn.lock().map_err(|e| e.to_string())?;
     db::delete_note(&conn, note_id).map_err(|e| e.to_string())
 }
+
+#[tauri::command]
+pub fn set_note_tags(state: tauri::State<'_, DbState>, note_id: i64, tags: Vec<String>) -> Result<(), String> {
+    let conn = state.conn.lock().map_err(|e| e.to_string())?;
+    db::set_note_tags(&conn, note_id, &tags).map_err(|e| e.to_string())
+}

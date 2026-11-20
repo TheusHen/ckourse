@@ -49,6 +49,7 @@ interface VideoPlayerProps {
   defaultVolume?: number;
   skipSeconds?: number;
   onTimeUpdate?: (time: number) => void;
+  onWatchTime?: (seconds: number) => void;
   onDurationChange?: (duration: number) => void;
   onPlayStateChange?: (playing: boolean) => void;
   onEnded?: () => void;
@@ -222,6 +223,7 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(funct
   defaultVolume = 100,
   skipSeconds = 10,
   onTimeUpdate,
+  onWatchTime,
   onDurationChange,
   onPlayStateChange,
   onEnded,
@@ -284,6 +286,9 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(funct
   );
   const [autoSkipRemaining, setAutoSkipRemaining] = useState(autoSkipSeconds);
   const [autoSkipCancelled, setAutoSkipCancelled] = useState(false);
+  const watchSecondsRef = useRef(0);
+  const lastWatchTickRef = useRef(0);
+  const activePlaybackLessonRef = useRef<number | null>(null);
 
   // True while the starvation watchdog has the element paused waiting for data.
   // The UI keeps reading "playing" (spinner up, pause icon) the whole time.
@@ -630,6 +635,7 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(funct
       // The watchdog paused the element but the UI still reads "playing" — a
       // toggle here means the user wants a real pause.
       starvedRef.current = false;
+      activePlaybackLessonRef.current = null;
       setIsBuffering(false);
       setIsPlaying(false);
       onPlayStateChange?.(false);
@@ -807,15 +813,17 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(funct
   }, [onDurationChange]);
 
   const handlePlay = useCallback(() => {
+    activePlaybackLessonRef.current = lesson?.id ?? null;
     setIsPlaying(true);
     setHasEnded(false);
     onPlayStateChange?.(true);
     resetHideTimer();
-  }, [onPlayStateChange, resetHideTimer]);
+  }, [lesson?.id, onPlayStateChange, resetHideTimer]);
 
   const handlePause = useCallback(() => {
     // A watchdog pause isn't a user pause: keep the UI in "playing + buffering".
     if (starvedRef.current) return;
+    activePlaybackLessonRef.current = null;
     setIsPlaying(false);
     setIsBuffering(false);
     onPlayStateChange?.(false);
@@ -824,6 +832,7 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(funct
   }, [onPlayStateChange]);
 
   const handleEnded = useCallback(() => {
+    activePlaybackLessonRef.current = null;
     setHasEnded(true);
     setIsPlaying(false);
     setIsBuffering(false);
@@ -831,6 +840,43 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(funct
     onPlayStateChange?.(false);
     onEnded?.();
   }, [onEnded, onPlayStateChange]);
+
+  const flushWatchTime = useCallback(() => {
+    const seconds = Math.floor(watchSecondsRef.current);
+    if (seconds < 1) return;
+    watchSecondsRef.current -= seconds;
+    onWatchTime?.(seconds);
+  }, [onWatchTime]);
+
+  useEffect(() => {
+    watchSecondsRef.current = 0;
+    lastWatchTickRef.current = Date.now();
+    if (!lesson || !isPlaying) return;
+
+    const timer = setInterval(() => {
+      const now = Date.now();
+      const elapsed = Math.min((now - lastWatchTickRef.current) / 1000, 1.5);
+      lastWatchTickRef.current = now;
+      const video = videoRef.current;
+      if (
+        !video ||
+        activePlaybackLessonRef.current !== lesson.id ||
+        video.paused ||
+        video.seeking ||
+        video.ended ||
+        starvedRef.current
+      ) return;
+
+      watchSecondsRef.current += elapsed;
+      if (watchSecondsRef.current >= 15) flushWatchTime();
+    }, 1000);
+
+    return () => {
+      clearInterval(timer);
+      flushWatchTime();
+      watchSecondsRef.current = 0;
+    };
+  }, [flushWatchTime, isPlaying, lesson?.id]);
 
   // Buffering state: `waiting`/`stalled` fire when playback is starved (common
   // for streamed Drive videos while the next block is fetched); `playing`/

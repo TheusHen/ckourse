@@ -25,6 +25,15 @@ export interface CourseProgress {
 
 export interface ActivityDay {
   date: string;
+  watchSeconds: number;
+}
+
+export interface ActivityDetail {
+  courseId: number;
+  courseTitle: string;
+  lessonId: number;
+  lessonTitle: string;
+  watchSeconds: number;
 }
 
 export interface CategoryBreakdown {

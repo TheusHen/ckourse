@@ -4,6 +4,7 @@ import {
   MagnifyingGlassIcon as MagnifyingGlass,
   BookOpenIcon as BookOpen,
   PlayCircleIcon as PlayCircle,
+  NotepadIcon as Notepad,
   XIcon as X,
 } from "@phosphor-icons/react";
 import { cn } from "@/lib/utils";
@@ -23,8 +24,10 @@ export function SidebarSearch({ collapsed }: SidebarSearchProps) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SearchResult[]>([]);
   const [activeIndex, setActiveIndex] = useState(-1);
+  const [searchError, setSearchError] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const searchRequestRef = useRef(0);
   const navigate = useNavigate();
 
   const openModal = useCallback(() => setOpen(true), []);
@@ -34,6 +37,8 @@ export function SidebarSearch({ collapsed }: SidebarSearchProps) {
     setQuery("");
     setResults([]);
     setActiveIndex(-1);
+    setSearchError(false);
+    searchRequestRef.current++;
   }, []);
 
   // Focus input when modal opens
@@ -63,14 +68,23 @@ export function SidebarSearch({ collapsed }: SidebarSearchProps) {
   }, [openModal]);
 
   const runSearch = useCallback((q: string) => {
+    const requestId = ++searchRequestRef.current;
     if (!q.trim()) {
       setResults([]);
       setActiveIndex(-1);
+      setSearchError(false);
       return;
     }
     searchContent(q).then((res) => {
+      if (requestId !== searchRequestRef.current) return;
       setResults(res);
       setActiveIndex(-1);
+      setSearchError(false);
+    }).catch(() => {
+      if (requestId !== searchRequestRef.current) return;
+      setResults([]);
+      setActiveIndex(-1);
+      setSearchError(true);
     });
   }, []);
 
@@ -87,12 +101,14 @@ export function SidebarSearch({ collapsed }: SidebarSearchProps) {
         navigate(`/course/${result.courseId}`, {
           state: { focusLessonId: result.lessonId },
         });
+      } else if (result.kind === "note") {
+        navigate(`/notes?q=${encodeURIComponent(query.trim())}`);
       } else {
         navigate(`/course/${result.courseId}`);
       }
       closeModal();
     },
-    [navigate, closeModal],
+    [navigate, closeModal, query],
   );
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -112,6 +128,7 @@ export function SidebarSearch({ collapsed }: SidebarSearchProps) {
 
   const courseResults = results.filter((r) => r.kind === "course");
   const lessonResults = results.filter((r) => r.kind === "lesson");
+  const noteResults = results.filter((r) => r.kind === "note");
   const hasResults = results.length > 0;
 
   return (
@@ -119,7 +136,7 @@ export function SidebarSearch({ collapsed }: SidebarSearchProps) {
       {/* Sidebar trigger button */}
       <button
         onClick={openModal}
-        aria-label="Search courses and lessons"
+        aria-label="Search courses, lessons, and notes"
         aria-keyshortcuts="/ Meta+K"
         className={cn(
           "flex h-8 w-full items-center rounded-lg text-muted-foreground transition-colors hover:text-sidebar-foreground",
@@ -300,6 +317,54 @@ export function SidebarSearch({ collapsed }: SidebarSearchProps) {
                       })}
                     </div>
                   )}
+
+                  {noteResults.length > 0 && (
+                    <div className={cn((courseResults.length > 0 || lessonResults.length > 0) && "mt-1")}>
+                      {(courseResults.length > 0 || lessonResults.length > 0) && (
+                        <div className="mx-4 my-1 h-px bg-border" />
+                      )}
+                      <div className="px-4 pb-1 pt-2">
+                        <span className="font-mono text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+                          Notes
+                        </span>
+                      </div>
+                      {noteResults.map((r) => {
+                        const globalIdx = results.indexOf(r);
+                        return (
+                          <button
+                            key={`note-${r.noteId}`}
+                            onPointerDown={(e) => {
+                              e.preventDefault();
+                              navigateToResult(r);
+                            }}
+                            className={cn(
+                              "flex w-full items-center gap-3 px-4 py-2.5 text-left transition-colors",
+                              activeIndex === globalIdx
+                                ? "bg-secondary text-foreground"
+                                : "text-foreground hover:bg-secondary",
+                            )}
+                          >
+                            <span
+                              className="flex size-7 shrink-0 items-center justify-center rounded-lg"
+                              style={{ backgroundColor: `${courseColor(r.accentColor)}22` }}
+                            >
+                              <Notepad
+                                className="size-4"
+                                style={{ color: courseColor(r.accentColor) }}
+                                weight="bold"
+                              />
+                            </span>
+                            <div className="min-w-0 flex-1">
+                              <div className="truncate font-sans text-sm">{r.lessonTitle}</div>
+                              <div className="truncate font-sans text-xs text-muted-foreground">
+                                {r.courseTitle}
+                              </div>
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
               </>
             )}
@@ -310,7 +375,9 @@ export function SidebarSearch({ collapsed }: SidebarSearchProps) {
                 <div className="h-px bg-border" />
                 <div className="px-4 py-8 text-center">
                   <p className="font-sans text-sm text-muted-foreground">
-                    No results for <span className="text-foreground">"{query}"</span>
+                    {searchError
+                      ? "Search failed. Try again."
+                      : <>No results for <span className="text-foreground">"{query}"</span></>}
                   </p>
                 </div>
               </>

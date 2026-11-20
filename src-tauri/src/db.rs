@@ -21,6 +21,7 @@ pub struct Course {
     pub author: String,
     pub completed_lessons: i64,
     pub total_lessons: i64,
+    pub total_duration_mins: i64,
     pub status: String,
     pub accent_color: String,
     pub last_watched: Option<String>,
@@ -99,6 +100,7 @@ pub struct NoteWithCourse {
     pub accent_color: String,
     /// Empty when the lesson no longer exists
     pub video_path: String,
+    pub tags: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -110,6 +112,7 @@ pub struct SearchResult {
     pub accent_color: String,
     pub lesson_id: Option<i64>,
     pub lesson_title: Option<String>,
+    pub note_id: Option<i64>,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -205,6 +208,12 @@ pub fn init_db(app_data_dir: &Path) -> SqlResult<Connection> {
             updated_at TEXT NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS note_tags (
+            note_id INTEGER NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+            tag TEXT NOT NULL,
+            PRIMARY KEY (note_id, tag)
+        );
+
         CREATE TABLE IF NOT EXISTS bookmarks (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             course_id INTEGER NOT NULL UNIQUE REFERENCES courses(id) ON DELETE CASCADE,
@@ -219,6 +228,13 @@ pub fn init_db(app_data_dir: &Path) -> SqlResult<Connection> {
 
         CREATE TABLE IF NOT EXISTS activity_log (
             date TEXT PRIMARY KEY
+        );
+
+        CREATE TABLE IF NOT EXISTS study_watch_time (
+            date TEXT NOT NULL,
+            lesson_id INTEGER NOT NULL REFERENCES lessons(id) ON DELETE CASCADE,
+            watch_seconds INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (date, lesson_id)
         );
 
         CREATE TABLE IF NOT EXISTS settings (
@@ -253,6 +269,7 @@ pub fn init_db(app_data_dir: &Path) -> SqlResult<Connection> {
         CREATE INDEX IF NOT EXISTS idx_subtitles_lesson_id ON subtitles(lesson_id);
         CREATE INDEX IF NOT EXISTS idx_resources_course_id ON resources(course_id);
         CREATE INDEX IF NOT EXISTS idx_courses_updated_at ON courses(updated_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_study_watch_time_lesson_id ON study_watch_time(lesson_id);
         ",
     )?;
 
@@ -297,6 +314,16 @@ pub fn init_db(app_data_dir: &Path) -> SqlResult<Connection> {
     // Activity log table migration for existing databases
     let _ = conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS activity_log (date TEXT PRIMARY KEY);",
+    );
+
+    let _ = conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS study_watch_time (
+            date TEXT NOT NULL,
+            lesson_id INTEGER NOT NULL REFERENCES lessons(id) ON DELETE CASCADE,
+            watch_seconds INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (date, lesson_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_study_watch_time_lesson_id ON study_watch_time(lesson_id);",
     );
 
     // Seed activity_log from existing last_watched dates
@@ -440,7 +467,8 @@ pub fn get_all_courses(conn: &Connection) -> SqlResult<Vec<Course>> {
                 c.description, c.thumbnail_path, c.last_watched,
                 (SELECT COUNT(*) FROM lessons l JOIN sections s ON l.section_id = s.id WHERE s.course_id = c.id) as total,
                 (SELECT COUNT(*) FROM lessons l JOIN sections s ON l.section_id = s.id WHERE s.course_id = c.id AND l.completed = 1) as completed,
-                (SELECT COUNT(*) > 0 FROM bookmarks b WHERE b.course_id = c.id) as bookmarked
+                (SELECT COUNT(*) > 0 FROM bookmarks b WHERE b.course_id = c.id) as bookmarked,
+                (SELECT COALESCE(SUM(l.duration), 0) FROM lessons l JOIN sections s ON l.section_id = s.id WHERE s.course_id = c.id) as total_duration
          FROM courses c
          ORDER BY c.updated_at DESC",
     )?;
@@ -468,6 +496,7 @@ pub fn get_all_courses(conn: &Connection) -> SqlResult<Vec<Course>> {
                 thumbnail_path: row.get(7)?,
                 last_watched: row.get(8)?,
                 total_lessons: total,
+                total_duration_mins: row.get(12)?,
                 completed_lessons: completed,
                 status: status.to_string(),
                 bookmarked: row.get::<_, i32>(11)? != 0,
@@ -582,7 +611,8 @@ pub fn get_course_by_id(conn: &Connection, course_id: i64) -> SqlResult<Option<C
                 c.description, c.thumbnail_path, c.last_watched,
                 (SELECT COUNT(*) FROM lessons l JOIN sections s ON l.section_id = s.id WHERE s.course_id = c.id) as total,
                 (SELECT COUNT(*) FROM lessons l JOIN sections s ON l.section_id = s.id WHERE s.course_id = c.id AND l.completed = 1) as completed,
-                (SELECT COUNT(*) > 0 FROM bookmarks b WHERE b.course_id = c.id) as bookmarked
+                (SELECT COUNT(*) > 0 FROM bookmarks b WHERE b.course_id = c.id) as bookmarked,
+                (SELECT COALESCE(SUM(l.duration), 0) FROM lessons l JOIN sections s ON l.section_id = s.id WHERE s.course_id = c.id) as total_duration
          FROM courses c WHERE c.id = ?1",
     )?;
 
@@ -607,6 +637,7 @@ pub fn get_course_by_id(conn: &Connection, course_id: i64) -> SqlResult<Option<C
             thumbnail_path: row.get(7)?,
             last_watched: row.get(8)?,
             total_lessons: total,
+            total_duration_mins: row.get(12)?,
             completed_lessons: completed,
             status: status.to_string(),
             bookmarked: row.get::<_, i32>(11)? != 0,
@@ -639,7 +670,9 @@ pub fn toggle_lesson_completed(conn: &Connection, lesson_id: i64) -> SqlResult<b
         params![chrono_now(), lesson_id],
     )?;
 
-    record_activity(conn);
+    if new_val != 0 {
+        record_activity(conn)?;
+    }
 
     Ok(new_val != 0)
 }
@@ -662,8 +695,6 @@ pub fn set_last_watched(conn: &Connection, course_id: i64, lesson_id: i64) -> Sq
         "UPDATE courses SET last_watched = ?1, updated_at = ?1 WHERE id = ?2",
         params![now, course_id],
     )?;
-
-    record_activity(conn);
 
     Ok(())
 }
@@ -710,7 +741,8 @@ pub fn get_all_notes(conn: &Connection) -> SqlResult<Vec<NoteWithCourse>> {
     let mut stmt = conn.prepare(
         "SELECT n.id, n.course_id, n.lesson_id, n.lesson_title, n.content,
                 n.created_at, n.updated_at, c.title, c.accent_color,
-                COALESCE(l.video_path, '')
+                COALESCE(l.video_path, ''),
+                COALESCE((SELECT GROUP_CONCAT(tag, char(31)) FROM note_tags WHERE note_id = n.id), '')
          FROM notes n
          JOIN courses c ON c.id = n.course_id
          LEFT JOIN lessons l ON l.id = n.lesson_id
@@ -730,6 +762,7 @@ pub fn get_all_notes(conn: &Connection) -> SqlResult<Vec<NoteWithCourse>> {
                 course_title: row.get(7)?,
                 accent_color: row.get(8)?,
                 video_path: row.get(9)?,
+                tags: row.get::<_, String>(10)?.split('\u{1f}').filter(|s| !s.is_empty()).map(str::to_string).collect(),
             })
         })?
         .collect::<SqlResult<Vec<_>>>()?;
@@ -798,6 +831,15 @@ pub fn update_note(conn: &Connection, note_id: i64, content: &str) -> SqlResult<
 pub fn delete_note(conn: &Connection, note_id: i64) -> SqlResult<()> {
     conn.execute("DELETE FROM notes WHERE id = ?1", params![note_id])?;
     Ok(())
+}
+
+pub fn set_note_tags(conn: &Connection, note_id: i64, tags: &[String]) -> SqlResult<()> {
+    let tx = conn.unchecked_transaction()?;
+    tx.execute("DELETE FROM note_tags WHERE note_id = ?1", params![note_id])?;
+    for tag in tags.iter().map(|t| t.trim()).filter(|t| !t.is_empty()).take(12) {
+        tx.execute("INSERT OR IGNORE INTO note_tags (note_id, tag) VALUES (?1, ?2)", params![note_id, tag])?;
+    }
+    tx.commit()
 }
 
 pub fn save_lesson_position(conn: &Connection, lesson_id: i64, position: f64) -> SqlResult<()> {
@@ -893,7 +935,8 @@ pub fn get_bookmarked_courses(conn: &Connection) -> SqlResult<Vec<Course>> {
         "SELECT c.id, c.title, c.author, c.accent_color, c.category, c.folder_path,
                 c.description, c.thumbnail_path, c.last_watched,
                 (SELECT COUNT(*) FROM lessons l JOIN sections s ON l.section_id = s.id WHERE s.course_id = c.id) as total,
-                (SELECT COUNT(*) FROM lessons l JOIN sections s ON l.section_id = s.id WHERE s.course_id = c.id AND l.completed = 1) as completed
+                (SELECT COUNT(*) FROM lessons l JOIN sections s ON l.section_id = s.id WHERE s.course_id = c.id AND l.completed = 1) as completed,
+                (SELECT COALESCE(SUM(l.duration), 0) FROM lessons l JOIN sections s ON l.section_id = s.id WHERE s.course_id = c.id) as total_duration
          FROM courses c
          JOIN bookmarks b ON b.course_id = c.id
          ORDER BY b.created_at DESC",
@@ -922,6 +965,7 @@ pub fn get_bookmarked_courses(conn: &Connection) -> SqlResult<Vec<Course>> {
                 thumbnail_path: row.get(7)?,
                 last_watched: row.get(8)?,
                 total_lessons: total,
+                total_duration_mins: row.get(11)?,
                 completed_lessons: completed,
                 status: status.to_string(),
                 bookmarked: true,
@@ -977,12 +1021,33 @@ pub fn get_lesson_subtitles(conn: &Connection, lesson_id: i64) -> SqlResult<Vec<
 
 // --- Activity & Stats ---
 
-fn record_activity(conn: &Connection) {
+fn record_activity(conn: &Connection) -> SqlResult<()> {
     let today = &chrono_now()[..10]; // "YYYY-MM-DD"
-    let _ = conn.execute(
+    conn.execute(
         "INSERT OR IGNORE INTO activity_log (date) VALUES (?1)",
         params![today],
-    );
+    )?;
+    Ok(())
+}
+
+pub fn record_watch_time(conn: &Connection, lesson_id: i64, seconds: i64) -> SqlResult<()> {
+    let today = &chrono_now()[..10];
+    conn.execute(
+        "INSERT INTO study_watch_time (date, lesson_id, watch_seconds) VALUES (?1, ?2, ?3)
+         ON CONFLICT(date, lesson_id) DO UPDATE SET
+           watch_seconds = study_watch_time.watch_seconds + excluded.watch_seconds",
+        params![today, lesson_id, seconds],
+    )?;
+
+    let watched_today: i64 = conn.query_row(
+        "SELECT SUM(watch_seconds) FROM study_watch_time WHERE date = ?1",
+        params![today],
+        |row| row.get(0),
+    )?;
+    if watched_today >= 60 {
+        record_activity(conn)?;
+    }
+    Ok(())
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -1017,12 +1082,18 @@ fn calculate_level(completed: i64) -> (i64, i64) {
 
 pub fn get_dashboard_stats(conn: &Connection) -> SqlResult<DashboardStats> {
     // Aggregate lesson stats in a single query
-    let (total_lessons, completed_lessons, total_watch_time_mins): (i64, i64, i64) =
+    let (total_lessons, completed_lessons): (i64, i64) =
         conn.query_row(
-            "SELECT COUNT(*), COALESCE(SUM(completed), 0), COALESCE(SUM(CASE WHEN completed = 1 THEN duration ELSE 0 END), 0) FROM lessons",
+            "SELECT COUNT(*), COALESCE(SUM(completed), 0) FROM lessons",
             [],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
+
+    let total_watch_time_mins: i64 = conn.query_row(
+        "SELECT COALESCE(SUM(watch_seconds), 0) / 60 FROM study_watch_time",
+        [],
+        |row| row.get(0),
+    )?;
 
     let total_notes: i64 = conn.query_row("SELECT COUNT(*) FROM notes", [], |row| row.get(0))?;
 
@@ -1059,16 +1130,24 @@ pub fn get_dashboard_stats(conn: &Connection) -> SqlResult<DashboardStats> {
         .collect();
 
     if !dates.is_empty() {
-        // Parse today's date
         let today_days = date_to_days(today);
-        let mut expected_days = today_days;
-
+        let latest_day = date_to_days(&dates[0]);
+        let mut expected_days = if latest_day == today_days {
+            Some(today_days)
+        } else if latest_day == today_days - 1 {
+            Some(today_days - 1)
+        } else {
+            None
+        };
         for date_str in &dates {
+            let Some(expected) = expected_days else {
+                break;
+            };
             let d = date_to_days(date_str);
-            if d == expected_days {
+            if d == expected {
                 streak += 1;
-                expected_days -= 1;
-            } else if d < expected_days {
+                expected_days = Some(expected - 1);
+            } else if d < expected {
                 break;
             }
         }
@@ -1124,6 +1203,17 @@ pub struct CourseProgress {
 #[serde(rename_all = "camelCase")]
 pub struct ActivityDay {
     pub date: String,
+    pub watch_seconds: i64,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ActivityDetail {
+    pub course_id: i64,
+    pub course_title: String,
+    pub lesson_id: i64,
+    pub lesson_title: String,
+    pub watch_seconds: i64,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -1173,11 +1263,24 @@ pub fn get_progress_data(conn: &Connection) -> SqlResult<ProgressData> {
         })?
         .collect::<SqlResult<Vec<_>>>()?;
 
-    // Activity history (all dates)
-    let mut stmt = conn.prepare("SELECT date FROM activity_log ORDER BY date")?;
+    // Include legacy activity dates while attaching exact playback time where available.
+    let mut stmt = conn.prepare(
+        "SELECT dates.date, COALESCE(SUM(w.watch_seconds), 0)
+         FROM (
+             SELECT date FROM activity_log
+             UNION
+             SELECT date FROM study_watch_time
+         ) dates
+         LEFT JOIN study_watch_time w ON w.date = dates.date
+         GROUP BY dates.date
+         ORDER BY dates.date",
+    )?;
     let activity_days: Vec<ActivityDay> = stmt
         .query_map([], |row| {
-            Ok(ActivityDay { date: row.get(0)? })
+            Ok(ActivityDay {
+                date: row.get(0)?,
+                watch_seconds: row.get(1)?,
+            })
         })?
         .collect::<SqlResult<Vec<_>>>()?;
 
@@ -1251,6 +1354,28 @@ pub fn get_progress_data(conn: &Connection) -> SqlResult<ProgressData> {
         categories,
         longest_streak,
     })
+}
+
+pub fn get_activity_details(conn: &Connection, date: &str) -> SqlResult<Vec<ActivityDetail>> {
+    let mut stmt = conn.prepare(
+        "SELECT c.id, c.title, l.id, l.title, wt.watch_seconds
+         FROM study_watch_time wt
+         JOIN lessons l ON l.id = wt.lesson_id
+         JOIN sections s ON s.id = l.section_id
+         JOIN courses c ON c.id = s.course_id
+         WHERE wt.date = ?1
+         ORDER BY wt.watch_seconds DESC, c.title, l.title",
+    )?;
+    stmt.query_map(params![date], |row| {
+        Ok(ActivityDetail {
+            course_id: row.get(0)?,
+            course_title: row.get(1)?,
+            lesson_id: row.get(2)?,
+            lesson_title: row.get(3)?,
+            watch_seconds: row.get(4)?,
+        })
+    })?
+    .collect()
 }
 
 // --- Custom Categories ---
@@ -1403,6 +1528,7 @@ pub fn delete_all_data(conn: &Connection) -> SqlResult<()> {
         DELETE FROM resources;
         DELETE FROM favorites;
         DELETE FROM bookmarks;
+        DELETE FROM study_watch_time;
         DELETE FROM lessons;
         DELETE FROM sections;
         DELETE FROM courses;
@@ -1493,6 +1619,7 @@ pub fn search_content(conn: &Connection, query: &str) -> SqlResult<Vec<SearchRes
             accent_color: row.get(2)?,
             lesson_id: None,
             lesson_title: None,
+            note_id: None,
         })
     })?;
     for r in course_rows {
@@ -1517,9 +1644,34 @@ pub fn search_content(conn: &Connection, query: &str) -> SqlResult<Vec<SearchRes
             course_id: row.get(2)?,
             course_title: row.get(3)?,
             accent_color: row.get(4)?,
+            note_id: None,
         })
     })?;
     for r in lesson_rows {
+        results.push(r?);
+    }
+
+    // Search note text and keep its course/lesson context for navigation.
+    let mut stmt = conn.prepare(
+        "SELECT n.id, n.lesson_id, n.lesson_title, c.id, c.title, c.accent_color
+         FROM notes n
+         JOIN courses c ON c.id = n.course_id
+         WHERE LOWER(n.lesson_title) LIKE ?1 OR LOWER(n.content) LIKE ?1
+         ORDER BY n.updated_at DESC
+         LIMIT 10",
+    )?;
+    let note_rows = stmt.query_map(params![pattern], |row| {
+        Ok(SearchResult {
+            kind: "note".to_string(),
+            course_id: row.get(3)?,
+            course_title: row.get(4)?,
+            accent_color: row.get(5)?,
+            lesson_id: Some(row.get(1)?),
+            lesson_title: Some(row.get(2)?),
+            note_id: Some(row.get(0)?),
+        })
+    })?;
+    for r in note_rows {
         results.push(r?);
     }
 
@@ -1709,5 +1861,117 @@ mod tests {
         assert_eq!(calculate_level(499), (3, 1));
         assert_eq!(calculate_level(500), (4, 0));
         assert_eq!(calculate_level(3000), (4, 0));
+    }
+
+    #[test]
+    fn playback_time_updates_watch_stats_and_only_counts_real_activity() {
+        let (conn, dir) = temp_db();
+        let course_id = conn
+            .query_row(
+                "INSERT INTO courses (title, folder_path, created_at, updated_at)
+                 VALUES ('Course', '/course', '2026-01-01', '2026-01-01')
+                 RETURNING id",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap();
+        let section_id = conn
+            .query_row(
+                "INSERT INTO sections (course_id, title) VALUES (?1, 'Section') RETURNING id",
+                params![course_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap();
+        let lesson_id = conn
+            .query_row(
+                "INSERT INTO lessons (section_id, title, video_path, duration)
+                 VALUES (?1, 'Lesson', '/course/lesson.mp4', 10)
+                 RETURNING id",
+                params![section_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap();
+
+        set_last_watched(&conn, course_id, lesson_id).unwrap();
+        assert_eq!(get_dashboard_stats(&conn).unwrap().current_streak, 0);
+
+        record_watch_time(&conn, lesson_id, 30).unwrap();
+        assert_eq!(get_dashboard_stats(&conn).unwrap().current_streak, 0);
+        record_watch_time(&conn, lesson_id, 30).unwrap();
+
+        let stats = get_dashboard_stats(&conn).unwrap();
+        assert_eq!(stats.total_watch_time_mins, 1);
+        assert_eq!(stats.current_streak, 1);
+
+        let today = &chrono_now()[..10];
+        let details = get_activity_details(&conn, today).unwrap();
+        assert_eq!(details.len(), 1);
+        assert_eq!(details[0].watch_seconds, 60);
+        assert_eq!(get_progress_data(&conn).unwrap().activity_days[0].watch_seconds, 60);
+
+        drop(conn);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn current_streak_includes_yesterday_when_today_has_no_activity() {
+        let (conn, dir) = temp_db();
+        let today = &chrono_now()[..10];
+        let yesterday = days_to_date(date_to_days(today) - 1);
+        conn.execute(
+            "INSERT INTO activity_log (date) VALUES (?1)",
+            params![yesterday],
+        )
+        .unwrap();
+
+        assert_eq!(get_dashboard_stats(&conn).unwrap().current_streak, 1);
+
+        drop(conn);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn global_search_includes_matching_notes() {
+        let (conn, dir) = temp_db();
+        let course_id = conn
+            .query_row(
+                "INSERT INTO courses (title, folder_path, created_at, updated_at)
+                 VALUES ('Course', '/course', '2026-01-01', '2026-01-01')
+                 RETURNING id",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap();
+        let section_id = conn
+            .query_row(
+                "INSERT INTO sections (course_id, title) VALUES (?1, 'Section') RETURNING id",
+                params![course_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap();
+        let lesson_id = conn
+            .query_row(
+                "INSERT INTO lessons (section_id, title, video_path)
+                 VALUES (?1, 'Lesson title', '/course/lesson.mp4')
+                 RETURNING id",
+                params![section_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap();
+        conn.execute(
+            "INSERT INTO notes (course_id, lesson_id, lesson_title, content, created_at, updated_at)
+             VALUES (?1, ?2, 'Lesson title', '<p>distinctive insight</p>', '2026-01-01', '2026-01-01')",
+            params![course_id, lesson_id],
+        )
+        .unwrap();
+
+        let results = search_content(&conn, "distinctive insight").unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].kind, "note");
+        assert_eq!(results[0].lesson_id, Some(lesson_id));
+        assert!(results[0].note_id.is_some());
+
+        drop(conn);
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

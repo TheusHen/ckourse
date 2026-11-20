@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { usePageVisible } from "@/hooks/usePageVisible";
 import {
   NotepadIcon as Notepad,
@@ -13,15 +13,16 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { SegmentedControl } from "@/components/ui/segmented-control";
 import { Menu, MenuContent, MenuLabel, MenuRadioGroup, MenuRadioItem, MenuTrigger } from "@/components/ui/menu";
 import type { NoteWithCourse } from "@/types";
-import { getAllNotes, updateNote, deleteNote } from "@/lib/store";
+import { getAllNotes, updateNote, deleteNote, setNoteTags } from "@/lib/store";
 import { NoteEditor } from "@/components/course-detail/NoteEditor";
 import { courseColor } from "@/lib/color";
-import { noteText } from "@/lib/notes";
+import { firstTimestamp, noteText } from "@/lib/notes";
 import { NoteCard } from "@/components/notes/NoteCard";
 import { RevisitNote } from "@/components/notes/RevisitNote";
 import { CourseCover } from "@/components/dashboard/CourseCover";
 
 type SortMode = "recent" | "course";
+type NoteView = "all" | "timestamped" | "untimestamped";
 
 interface NotesProps {
   className?: string;
@@ -66,10 +67,22 @@ function relativeTime(iso: string): string {
 export function Notes({ className }: NotesProps) {
   const [notes, setNotes] = useState<NoteWithCourse[]>([]);
   const [loading, setLoading] = useState(true);
-  const [search, setSearch] = useState("");
+  const [searchParams, setSearchParams] = useSearchParams();
+  const search = searchParams.get("q") ?? "";
   const [courseFilter, setCourseFilter] = useState<number | null>(null);
   const [editingNoteId, setEditingNoteId] = useState<number | null>(null);
   const [sortMode, setSortMode] = useState<SortMode>("recent");
+  const [noteView, setNoteView] = useState<NoteView>("all");
+  const [activeTag, setActiveTag] = useState<string | null>(null);
+
+  const setSearch = useCallback((value: string) => {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      if (value) next.set("q", value);
+      else next.delete("q");
+      return next;
+    }, { replace: true });
+  }, [setSearchParams]);
 
   const reload = useCallback(() => {
     return getAllNotes().then(setNotes);
@@ -94,6 +107,8 @@ export function Notes({ className }: NotesProps) {
     return Array.from(map.values()).sort((a, b) => a.title.localeCompare(b.title));
   }, [notes]);
 
+  const tags = useMemo(() => Array.from(new Set(notes.flatMap((n) => n.tags))).sort((a, b) => a.localeCompare(b)), [notes]);
+
   // Search text per note, parsed out of the HTML once per load rather than on every keystroke
   const searchText = useMemo(
     () => new Map(notes.map((n) => [n.id, `${noteText(n.content)}\n${n.lessonTitle}\n${n.courseTitle}`.toLowerCase()])),
@@ -103,6 +118,9 @@ export function Notes({ className }: NotesProps) {
   const groups = useMemo<NoteGroup[]>(() => {
     let result = notes;
     if (courseFilter !== null) result = result.filter((n) => n.courseId === courseFilter);
+    if (activeTag) result = result.filter((n) => n.tags.includes(activeTag));
+    if (noteView === "timestamped") result = result.filter((n) => firstTimestamp(n.content) !== null);
+    if (noteView === "untimestamped") result = result.filter((n) => firstTimestamp(n.content) === null);
     if (search.trim()) {
       const q = search.toLowerCase();
       result = result.filter((n) => searchText.get(n.id)?.includes(q));
@@ -126,7 +144,7 @@ export function Notes({ className }: NotesProps) {
     }
     if (sortMode === "course") out.sort((a, b) => a.label.localeCompare(b.label));
     return out;
-  }, [notes, searchText, courseFilter, search, sortMode]);
+  }, [notes, searchText, courseFilter, search, sortMode, noteView, activeTag]);
 
   const handleEdit = useCallback(
     async (noteId: number, content: string) => {
@@ -145,6 +163,11 @@ export function Notes({ className }: NotesProps) {
     },
     [reload],
   );
+
+  const handleSetTags = useCallback(async (noteId: number, nextTags: string[]) => {
+    await setNoteTags(noteId, nextTags);
+    await reload();
+  }, [reload]);
 
   const header = (subtitle: string) => (
     <header>
@@ -207,6 +230,10 @@ export function Notes({ className }: NotesProps) {
           ]}
         />
 
+        <SegmentedControl aria-label="Filter notes by timestamp" value={noteView} onChange={setNoteView} size="sm" options={[
+          { value: "all", label: "All notes" }, { value: "timestamped", label: "With moment" }, { value: "untimestamped", label: "Without moment" },
+        ]} />
+
         {courses.length > 1 && (
           <Menu>
             <MenuTrigger asChild>
@@ -245,6 +272,8 @@ export function Notes({ className }: NotesProps) {
 
         <SearchInput value={search} onChange={setSearch} placeholder="Search notes" className="ml-auto w-full sm:w-64" />
       </div>
+
+      {tags.length > 0 && <div className="flex flex-wrap items-center gap-2" aria-label="Filter notes by tag"><Button size="xs" variant={activeTag === null ? "secondary" : "ghost"} onClick={() => setActiveTag(null)}>All tags</Button>{tags.map((tag) => <Button key={tag} size="xs" variant={activeTag === tag ? "secondary" : "ghost"} onClick={() => setActiveTag(activeTag === tag ? null : tag)}>#{tag}</Button>)}</div>}
 
       {shown === 0 ? (
         <EmptyState
@@ -307,6 +336,7 @@ export function Notes({ className }: NotesProps) {
                           highlight={search}
                           onStartEdit={() => setEditingNoteId(note.id)}
                           onDelete={() => handleDelete(note.id)}
+                          onSetTags={(next) => handleSetTags(note.id, next)}
                         />
                       )}
                     </li>

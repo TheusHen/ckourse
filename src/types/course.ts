@@ -7,6 +7,7 @@ export interface Course {
   author: string;
   completedLessons: number;
   totalLessons: number;
+  totalDurationMins: number;
   status: "in-progress" | "completed" | "not-started";
   accentColor: string;
   lastWatched: string | null;
@@ -86,15 +87,17 @@ export interface NoteWithCourse {
   accentColor: string;
   /** Empty when the lesson no longer exists */
   videoPath: string;
+  tags: string[];
 }
 
 export interface SearchResult {
-  kind: "course" | "lesson";
+  kind: "course" | "lesson" | "note";
   courseId: number;
   courseTitle: string;
   accentColor: string;
   lessonId: number | null;
   lessonTitle: string | null;
+  noteId: number | null;
 }
 
 export interface FavoriteLesson {

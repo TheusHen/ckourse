@@ -46,7 +46,9 @@ Ckourse fills that gap. It turns a course folder into a structured, trackable co
 - **Timestamped notes.** Each note is tied to a moment in a lesson. Click one to jump back to that moment, even from another lesson.
 - **Bookmarks** for lessons you want to come back to, collected on their own page.
 - **PDF viewer.** Read PDF attachments inside the app, for local, Drive, and server courses. Each lesson's own files appear next to it in the Resources tab.
-- **Progress page** with daily streaks, total watch time, an activity chart, and completion by course and by category.
+- **Progress page** with tracked playback time, date ranges, period comparisons, a clickable activity chart, completion forecasts, and progress by course and category.
+- **Weekly goals and course pinning.** Set a gentle optional watch-time goal and keep your main course at the top of the dashboard.
+- **Global search and note review.** Find courses, lessons, and notes from the sidebar; tag notes and filter notes with or without video moments.
 - **Levels.** Move from Beginner to Explorer, Achiever, and Master as you complete lessons (25, 150, and 500 lessons).
 - **Completion celebration** when you finish a course.
 
@@ -59,7 +61,6 @@ Ckourse fills that gap. It turns a course folder into a structured, trackable co
 ### Roadmap
 
 - Preview for other attachment types (text, images, Markdown)
-- Search across courses, lessons, and notes
 
 ---
 

@@ -100,6 +100,36 @@ pub fn get_progress_data(
 }
 
 #[tauri::command]
+pub fn record_watch_time(
+    state: tauri::State<'_, DbState>,
+    lesson_id: i64,
+    seconds: i64,
+) -> Result<(), String> {
+    if !(1..=60).contains(&seconds) {
+        return Err("Watch-time increments must be between 1 and 60 seconds.".to_string());
+    }
+    let conn = state.conn.lock().map_err(|e| e.to_string())?;
+    db::record_watch_time(&conn, lesson_id, seconds).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_activity_details(
+    state: tauri::State<'_, DbState>,
+    date: String,
+) -> Result<Vec<db::ActivityDetail>, String> {
+    if date.len() != 10
+        || !date
+            .chars()
+            .enumerate()
+            .all(|(i, c)| if i == 4 || i == 7 { c == '-' } else { c.is_ascii_digit() })
+    {
+        return Err("Activity date must use YYYY-MM-DD format.".to_string());
+    }
+    let conn = state.conn.lock().map_err(|e| e.to_string())?;
+    db::get_activity_details(&conn, &date).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub fn delete_all_data(state: tauri::State<'_, DbState>) -> Result<(), String> {
     let conn = state.conn.lock().map_err(|e| e.to_string())?;
     db::delete_all_data(&conn).map_err(|e| e.to_string())

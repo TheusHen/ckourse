@@ -5,6 +5,7 @@ import {
   MagnifyingGlassIcon as MagnifyingGlass,
   PlusIcon as Plus,
   CaretUpDownIcon as CaretUpDown,
+  PushPinIcon as PushPin,
 } from "@phosphor-icons/react";
 import { cn } from "@/lib/utils";
 import { CourseCard } from "@/components/dashboard/CourseCard";
@@ -14,11 +15,11 @@ import { SearchInput } from "@/components/ui/search-input";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import type { Course, DashboardStats, CourseCategory, CourseStatus } from "@/types";
-import { byLastWatched, getCourses, getDashboardStats } from "@/lib/store";
+import { byLastWatched, getCourses, getDashboardStats, getProgressData, getAllSettings, setSetting } from "@/lib/store";
 import { SegmentedControl } from "@/components/ui/segmented-control";
 import { Menu, MenuContent, MenuLabel, MenuRadioGroup, MenuRadioItem, MenuSeparator, MenuTrigger } from "@/components/ui/menu";
 
-type SortOption = "recent" | "progress" | "title";
+type SortOption = "recent" | "progress" | "title" | "longest" | "shortest";
 
 const builtinCategoryLabels: Record<CourseCategory | "all", string> = {
   all: "All",
@@ -66,6 +67,8 @@ const sortLabels: Record<SortOption, string> = {
   recent: "Recently watched",
   progress: "Most progress",
   title: "Title",
+  longest: "Longest course",
+  shortest: "Shortest course",
 };
 
 interface DashboardProps {
@@ -79,6 +82,10 @@ export function Dashboard({ className }: DashboardProps) {
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
+  const [pinnedCourseId, setPinnedCourseId] = useState<number | null>(null);
+  const [weeklyGoal, setWeeklyGoal] = useState(180);
+  const [weeklyMinutes, setWeeklyMinutes] = useState(0);
+  const [savedOnly, setSavedOnly] = useState(false);
 
   // Derive filter state from URL search params
   const search = searchParams.get("q") ?? "";
@@ -109,10 +116,15 @@ export function Dashboard({ className }: DashboardProps) {
   const loadCourses = useCallback((showSpinner = false) => {
     if (showSpinner) setLoading(true);
     setLoadError(false);
-    Promise.all([getCourses(), getDashboardStats()])
-      .then(([c, s]) => {
+    Promise.all([getCourses(), getDashboardStats(), getProgressData()])
+      .then(([c, s, progress]) => {
         setCourses(c ?? []);
         setStats(s);
+        const today = new Date().toISOString().slice(0, 10);
+        const startDate = new Date();
+        startDate.setUTCDate(startDate.getUTCDate() - ((startDate.getUTCDay() + 6) % 7));
+        const start = startDate.toISOString().slice(0, 10);
+        setWeeklyMinutes(Math.round(progress.activityDays.filter((d) => d.date >= start && d.date <= today).reduce((sum, d) => sum + d.watchSeconds, 0) / 60));
       })
       .catch(() => setLoadError(true))
       .finally(() => setLoading(false));
@@ -121,6 +133,13 @@ export function Dashboard({ className }: DashboardProps) {
   useEffect(() => {
     loadCourses(true);
   }, [loadCourses]);
+
+  useEffect(() => {
+    getAllSettings().then((settings) => {
+      setPinnedCourseId(Number(settings.pinned_course_id) || null);
+      setWeeklyGoal(settings.weekly_goal_minutes === undefined ? 180 : Math.max(0, Number(settings.weekly_goal_minutes) || 0));
+    }).catch(() => {});
+  }, []);
 
   // The library's old "saved only" filter is the Saved page now
   const legacyBookmarkFilter = searchParams.get("bm") === "1";
@@ -151,6 +170,7 @@ export function Dashboard({ className }: DashboardProps) {
     if (status !== "all") {
       result = result.filter((c) => c.status === status);
     }
+    if (savedOnly) result = result.filter((c) => c.bookmarked);
 
     result = [...result].sort((a, b) => {
       switch (sort) {
@@ -167,20 +187,28 @@ export function Dashboard({ className }: DashboardProps) {
         }
         case "title":
           return a.title.localeCompare(b.title);
+        case "longest":
+          if (!a.totalDurationMins) return 1;
+          if (!b.totalDurationMins) return -1;
+          return b.totalDurationMins - a.totalDurationMins;
+        case "shortest":
+          if (!a.totalDurationMins) return 1;
+          if (!b.totalDurationMins) return -1;
+          return a.totalDurationMins - b.totalDurationMins;
         default:
           return 0;
       }
     });
 
     return result;
-  }, [courses, search, category, status, sort]);
+  }, [courses, search, category, status, sort, savedOnly]);
 
   const availableCategories = useMemo(() => {
     const cats = new Set(courses.map((c) => c.category));
     return ["all" as const, ...Array.from(cats)] as (CourseCategory | "all")[];
   }, [courses]);
 
-  const featured = useMemo(() => pickFeatured(courses), [courses]);
+  const featured = useMemo(() => courses.find((c) => c.id === pinnedCourseId && c.status !== "completed") ?? pickFeatured(courses), [courses, pinnedCourseId]);
 
   const handleImport = () => {
     navigate("/import");
@@ -218,6 +246,7 @@ export function Dashboard({ className }: DashboardProps) {
   }
 
   const inProgress = courses.filter((c) => c.status === "in-progress").length;
+  const continueCourses = byLastWatched(courses.filter((c) => c.status === "in-progress" && c.id !== featured?.id)).slice(0, 4);
   const today = new Date().toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" });
 
   return (
@@ -237,10 +266,16 @@ export function Dashboard({ className }: DashboardProps) {
       </header>
 
       {featured && (
-        <section aria-label="Up next">
-          <FeaturedCourse course={featured} />
+        <section aria-label="Up next" className="flex flex-col gap-3">
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-border bg-card px-5 py-4">
+            <div><p className="text-sm font-semibold">This week</p><p className="text-xs text-muted-foreground">{weeklyMinutes} of {weeklyGoal} min watched · optional goal</p></div>
+            <div className="flex items-center gap-2"><div className="h-2 w-32 overflow-hidden rounded-full bg-accent"><div className="h-full rounded-full bg-primary" style={{ width: `${weeklyGoal ? Math.min(100, weeklyMinutes / weeklyGoal * 100) : 0}%` }} /></div><select aria-label="Weekly study goal" value={weeklyGoal} onChange={(e) => { const value = Number(e.target.value); setWeeklyGoal(value); setSetting("weekly_goal_minutes", String(value)).catch(() => {}); }} className="rounded-lg border border-border bg-background px-2 py-1.5 text-xs"><option value={0}>No goal</option><option value={60}>1 hour</option><option value={120}>2 hours</option><option value={180}>3 hours</option><option value={300}>5 hours</option></select></div>
+          </div>
+          <div className="relative"><FeaturedCourse course={featured} /><button type="button" title={pinnedCourseId === featured.id ? "Unpin main course" : "Pin as main course"} aria-label={pinnedCourseId === featured.id ? "Unpin main course" : "Pin as main course"} aria-pressed={pinnedCourseId === featured.id} onClick={() => { const next = pinnedCourseId === featured.id ? null : featured.id; setPinnedCourseId(next); setSetting("pinned_course_id", next == null ? "" : String(next)).catch(() => {}); }} className="absolute right-4 top-4 z-10 flex size-9 items-center justify-center rounded-full bg-black/50 text-white backdrop-blur hover:bg-black/70"><PushPin className="size-4" weight={pinnedCourseId === featured.id ? "fill" : "bold"} /></button></div>
         </section>
       )}
+
+      {continueCourses.length > 0 && <section aria-labelledby="continue-later-title" className="flex flex-col gap-5"><div className="flex items-baseline justify-between gap-4"><h2 id="continue-later-title" className="font-heading text-xl font-semibold">Continue later</h2><span className="text-xs text-muted-foreground">Your other courses in progress</span></div><div className="grid grid-cols-[repeat(auto-fill,minmax(210px,1fr))] gap-5">{continueCourses.map((course) => <CourseCard key={course.id} course={course} onBookmarkChange={loadCourses} />)}</div></section>}
 
       <section aria-labelledby="library-title" className="flex flex-col gap-6">
         <div className="flex flex-wrap items-center gap-3">
@@ -256,6 +291,8 @@ export function Dashboard({ className }: DashboardProps) {
               label: statusLabels[s],
             }))}
           />
+
+          <Button variant={savedOnly ? "secondary" : "ghost"} size="sm" aria-pressed={savedOnly} onClick={() => setSavedOnly((value) => !value)}>Saved</Button>
 
           <div className="ml-auto flex flex-wrap items-center gap-2">
             {availableCategories.length > 2 && (
